@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Grand Prix de Monaco 3D</title>
+<link rel="icon" type="image/png" href="logo1.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:ital,wght@1,600;1,800&display=swap" rel="stylesheet">
@@ -371,13 +372,27 @@ function bezier2(a,b,c,d,u) {
   const v=1-u, v2=v*v, u2=u*u;
   return { x:v2*v*a.x+3*v2*u*b.x+3*v*u2*c.x+u2*u*d.x, z:v2*v*a.z+3*v2*u*b.z+3*v*u2*c.z+u2*u*d.z };
 }
+// Direction latérale lissée (moyenne circulaire du cap sur une fenêtre d'environ 80 m).
+// Le tracé de la piste vient d'un relevé à la main : il a de tout petits plis invisibles à l'oeil,
+// mais dont le rayon de courbure local peut être plus petit que le décalage de la voie des stands
+// (24 m). Décaler la piste de ce cap NON lissé fait alors "plier" la voie des stands sur elle-même
+// à cet endroit précis (la voiture y fait un demi-tour instantané). Lisser le cap avant de décaler
+// supprime ce pli sans changer la ligne générale de la voie.
+function pitNormalAt(relM) {
+  let d = relM % TRACK_LEN; if (d < 0) d += TRACK_LEN;
+  const i0 = Math.round(d / (TRACK_LEN / N)) % N, W = 9;
+  let sx = 0, sz = 0;
+  for (let w = -W; w <= W; w++) { const i = (i0 + w + N) % N; sx += Math.cos(TA[i]); sz += Math.sin(TA[i]); }
+  const ang = Math.atan2(sz, sx);
+  return { rx: -Math.sin(ang), rz: Math.cos(ang) };
+}
 function ensurePitPath() {
   if (pitPath) return;
   const samples = [];
   let total = 0, prev = null, s0 = 0;
   const nS = Math.round(PIT_LANE_B - PIT_LANE_A);
   for (let k = 0; k <= nS; k++) {
-    const rel = PIT_LANE_A + k, t = trackPoseRel(rel), q = { x: t.x + t.rx * PIT_LAT, z: t.z + t.rz * PIT_LAT };
+    const rel = PIT_LANE_A + k, t = trackPoseRel(rel), n = pitNormalAt(rel), q = { x: t.x + n.rx * PIT_LAT, z: t.z + n.rz * PIT_LAT };
     if (prev) total += Math.hypot(q.x - prev.x, q.z - prev.z);
     samples.push({ u: k / nS, x: q.x, z: q.z, s: total });
     if (rel === 0) s0 = total;
@@ -724,9 +739,38 @@ function locate(c) {
   const limit = (inPitZone(nr.i) && side > 0) ? WALL_D2 : (side > 0 ? WDR[nr.i] : WDL[nr.i]);
   let hit = false, crossed = 0;
   if (nr.d > limit) {
-    const k = (limit - 0.4) / nr.d;
+    const k = (limit - 1.5) / nr.d;   // 1.5 m : couvre le demi-largeur de la voiture (~1,3 m), elle ne poque plus dans le rail/les panneaux
     c.x = TX[nr.i] + (c.x - TX[nr.i]) * k; c.z = TZ[nr.i] + (c.z - TZ[nr.i]) * k;
-    c.vx *= 0.5; c.vz *= 0.5; nr.d = limit - 0.4; hit = true;
+    c.vx *= 0.5; c.vz *= 0.5; nr.d = limit - 1.5; hit = true;
+  }
+  // Après un tête-à-queue ou une sortie large dans un virage, la voiture peut heurter un mur avec
+  // un COIN de la carrosserie (avant-gauche, avant-droit, etc.) plutôt qu'avec le centre du nez ou de
+  // l'arrière : elle a une vraie largeur (~2,6 m), pas seulement une longueur. Ne vérifier que l'axe
+  // central laissait ces coins s'enfoncer dans le mur ou les panneaux. On vérifie donc les 4 coins de
+  // la carrosserie, et on recommence plusieurs fois dans la même image pour bien dégager les cas où
+  // deux coins sont en défaut à la fois (par exemple dans l'angle entre deux murs).
+  const CORNERS = [[3.1, 1.3], [3.1, -1.3], [-2.6, 1.3], [-2.6, -1.3], [3.1, 0], [-2.6, 0]];
+  for (let pass = 0; pass < 12; pass++) {
+    // Cherche le coin le plus en défaut, puis pousse TOUTE la voiture vers le centre de la piste
+    // (direction stable donnée par le point le plus proche du CENTRE de la voiture, pas par celui du
+    // coin fautif — sinon, à certains endroits, la direction de correction changeait légèrement à
+    // chaque coin et les corrections finissaient par s'annuler entre elles sans jamais converger).
+    const ca = Math.cos(c.a), sa = Math.sin(c.a);
+    let worst = 0;
+    for (const [fw, lat] of CORNERS) {
+      const px = c.x + ca * fw - sa * lat, pz = c.z + sa * fw + ca * lat;
+      const nr2 = nearest(px, pz, c.idx);
+      const side2 = (px - TX[nr2.i]) * RGX[nr2.i] + (pz - TZ[nr2.i]) * RGZ[nr2.i];
+      const limit2 = (inPitZone(nr2.i) && side2 > 0) ? WALL_D2 : (side2 > 0 ? WDR[nr2.i] : WDL[nr2.i]);
+      const over = nr2.d - limit2;
+      if (over > worst) worst = over;
+    }
+    if (worst <= 0.02) break;
+    const nrp = nearest(c.x, c.z, c.idx);
+    const side0 = (c.x - TX[nrp.i]) * RGX[nrp.i] + (c.z - TZ[nrp.i]) * RGZ[nrp.i];
+    const pushSign = side0 >= 0 ? -1 : 1;
+    c.x += RGX[nrp.i] * pushSign * worst; c.z += RGZ[nrp.i] * pushSign * worst;
+    c.vx *= 0.5; c.vz *= 0.5; hit = true;
   }
   const prev = c.idx;
   c.idx = nr.i; c.dist = nr.d;
@@ -753,8 +797,7 @@ function separate(c, others) {
       c.x += -sa * s * pw * 0.6; c.z += ca * s * pw * 0.6;
       c.vx *= 0.996; c.vz *= 0.996;
     } else {
-      const s = lon > 0 ? -1 : 1;
-      c.x += ca * s * pl * 0.6; c.z += sa * s * pl * 0.6;
+      const s = lon > 0 ? -1 : 1;      c.x += ca * s * pl * 0.6; c.z += sa * s * pl * 0.6;
       if (lon > 0) { c.vx *= 0.985; c.vz *= 0.985; }
     }
   }
@@ -798,7 +841,8 @@ const me = {
   id: Math.random().toString(36).slice(2, 8), name: "", color: COLORS[0],
   x: 0, z: 0, a: 0, vx: 0, vz: 0, speed: 0, steer: 0, idx: 0, dist: 0, thr: 0, brk: 0,
   cross: 0, maxCross: 0, progress: 0, lapStart: 0, lastLap: 0, best: 0, f: 0,
-  tireLaps: 0, tireGrip: 1, tireBlown: 0, dq: 0, pitMode: 0, pitProgress: 0, pitService: 0, pitCompleted: 0, pitCrewSpawned: 0
+  tireLaps: 0, tireGrip: 1, tireBlown: 0, dq: 0, pitMode: 0, pitProgress: 0, pitService: 0, pitCompleted: 0, pitCrewSpawned: 0,
+  stuck: 0
 };
 try {
   me.name = localStorage.getItem("gp_name") || "";
@@ -997,7 +1041,8 @@ function disqualify(t) {
   flash("DISQUALIFIÉ — pneus non changés dans le délai obligatoire", 2600);
   sfxCrash(1);
   setTimeout(() => { if (phase === "finished") showResults(); }, 2200);
-}function requestStart() {
+}
+function requestStart() {
   if (!isHost || phase !== "lobby") return;
   const ids = Object.keys(people).sort().slice(0, 6);
   const nb = Math.max(0, Math.min(+$("botsSel").value, 10 - ids.length));
@@ -1131,6 +1176,16 @@ function physics(h, t) {
   if(canDrive&&me.pitMode)stepPlayerPit(h); else stepCar(me,thr,brk,steerIn,h);
   if(me.pitCrossFlag){me.pitCrossFlag=0;if(phase==="race")onLap(t);}   // ligne franchie dans la voie des stands = tour compté
   if(!me.pitMode){if(separate(me,others))sfxBump(Math.abs(me.speed));const r=locate(me);if(r.hit){camS.shake=1;sfxCrash(clamp(Math.abs(me.speed)/55,.25,1));sparkBurst(me.x,me.z,16);}if(r.crossed&&phase==="race")onLap(t);}
+  // Après un tête-à-queue ou un accrochage, la voiture du joueur pouvait rester coincée contre un mur
+  // pour le reste de la course (les bots, eux, se replaçaient déjà automatiquement au bout de 3 s).
+  // On applique maintenant la même sécurité au joueur : après 3 s quasi à l'arrêt hors pit-stop, on la
+  // replace sur la piste, dans le bon sens.
+  if (canDrive && !me.pitMode && Math.abs(me.speed) < 2) me.stuck += h; else me.stuck = 0;
+  if (me.stuck > 3) {
+    me.x = TX[me.idx] + RGX[me.idx] * RLO[me.idx]; me.z = TZ[me.idx] + RGZ[me.idx] * RLO[me.idx];
+    me.a = TA[me.idx]; me.vx = me.vz = me.speed = 0; me.steer = 0; me.stuck = 0;
+    flash("Voiture recentrée sur la piste", 1400);
+  }
 
   if (isHost && phase !== "countdown" && bots.length) {
     const all = others.concat([me]);
@@ -1424,7 +1479,7 @@ function buildScene() {
   spots.forEach(s => (rnd() < 0.55 ? pineN : roundN).push(s));
   const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.5, 3, 6), new THREE.MeshLambertMaterial({ color: 0x6b4a2b }), spots.length);
   const pine = new THREE.InstancedMesh(new THREE.ConeGeometry(2.8, 9, 8), new THREE.MeshLambertMaterial({ color: 0xffffff }), Math.max(1, pineN.length));
-  const round = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(3.3, 1), new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }), Math.max(1, roundN.length));
+  const round = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(3.3, 1), new THREE.MeshPhongMaterial({ color: 0xffffff, flatShading: true }), Math.max(1, roundN.length));
   const dummy = new THREE.Object3D(), tcol = new THREE.Color();
   let ti = 0;
   const put = (mesh, list, y, hue) => list.forEach((s, i) => {
@@ -1541,8 +1596,7 @@ function curveRadius(i, k) {
   const a = (i - k + N) % N, c = (i + k) % N;
   const abx = TX[i] - TX[a], abz = TZ[i] - TZ[a], acx = TX[c] - TX[a], acz = TZ[c] - TZ[a];
   const cross = Math.abs(abx * acz - abz * acx);
-  const A = Math.hypot(abx, abz), B = Math.hypot(TX[c] - TX[i], TZ[c] - TZ[i]), C = Math.hypot(acx, acz);
-  return cross > 1e-6 ? A * B * C / (2 * cross) : 1e9;
+  const A = Math.hypot(abx, abz), B = Math.hypot(TX[c] - TX[i], TZ[c] - TZ[i]), C = Math.hypot(acx, acz);  return cross > 1e-6 ? A * B * C / (2 * cross) : 1e9;
 }
 // Ruban dont la largeur suit la courbure (pour ne pas se replier dans les virages serrés)
 function ribbonWide(side, y, material, tile, maxW) {
@@ -1996,7 +2050,8 @@ function makeCarBasic(color, name, mine) {
       g.textAlign = "center"; g.textBaseline = "middle"; g.lineWidth = 8; g.strokeStyle = "rgba(0,0,0,.65)";
       g.strokeText(name, w / 2, h / 2); g.fillStyle = "#fff"; g.fillText(name, w / 2, h / 2);
     }, true);
-    tag.wrapT = THREE.ClampToEdgeWrapping;    sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tag, transparent: true, depthWrite: false }));
+    tag.wrapT = THREE.ClampToEdgeWrapping;
+    sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tag, transparent: true, depthWrite: false }));
     sprite.scale.set(8, 2, 1); sprite.position.set(0, 3.4, 0); root.add(sprite);
   }
   return { root, body, wheels, brake: mBrake, spin: 0, pitch: 0, roll: 0, lastSpeed: 0 };
@@ -2220,18 +2275,21 @@ function updateCamera(dt, t) {
     camera.position.set(s.x + Math.cos(ang) * rad, 9, s.z + Math.sin(ang) * rad);
     camera.lookAt(s.x, 1.2, s.z);
   } else {
-    camS.a += wrap(me.a - camS.a) * (1 - Math.exp(-(camS.mode === 2 ? 40 : 6) * dt));
+    camS.a += wrap(me.a - camS.a) * (1 - Math.exp(-((camS.mode === 2 || me.pitMode) ? 40 : 6) * dt));
     const v = Math.abs(me.speed), ca = Math.cos(camS.a), sa = Math.sin(camS.a);
     let dist, hgt, look, lookY;
-    if (camS.mode === 0) { dist = 8.5 + v * 0.02; hgt = 3.2 + v * 0.004; look = 14; lookY = 1.3; fov = 66 + v * 0.16; }
-    else if (camS.mode === 1) { dist = 14; hgt = 7.5; look = 12; lookY = 1.0; fov = 62 + v * 0.10; }
+    // Aux stands, la caméra recule dans la voie et monte un peu : elle ne reste plus coincée entre les cloisons du garage.
+    camS.pit = (camS.pit || 0) + ((me.pitMode ? 1 : 0) - (camS.pit || 0)) * Math.min(1, dt * 2.5);
+    const pk = camS.pit, mix = (a, b) => a + (b - a) * pk;
+    if (camS.mode === 0) { dist = mix(8.5 + v * 0.02, 14.5); hgt = mix(3.2 + v * 0.004, 5.4); look = mix(14, 3); lookY = 1.3; fov = mix(66 + v * 0.16, 62); }
+    else if (camS.mode === 1) { dist = mix(14, 17); hgt = mix(7.5, 9.5); look = 12; lookY = 1.0; fov = 62 + v * 0.10; }
     else { dist = -0.3; hgt = 1.2; look = 22; lookY = 1.0; fov = 78 + v * 0.10; }
     camS.shake *= Math.exp(-4 * dt);
     const amp = camS.shake * 0.5 + (me.dist > OFFD ? 0.07 * Math.min(1, v / 40) : 0);
     const jx = (Math.random() - 0.5) * amp, jy = (Math.random() - 0.5) * amp, jz = (Math.random() - 0.5) * amp;
     camera.position.set(me.x - ca * dist + jx, hgt + jy, me.z - sa * dist + jz);
     camera.lookAt(me.x + ca * look, lookY, me.z + sa * look);
-    camS.roll += (-me.steer * Math.min(1, v / 60) * 0.035 - camS.roll) * Math.min(1, dt * 5);
+    camS.roll += (-me.steer * Math.min(1, v / 60) * 0.035 - camS.roll) * Math.min(1, dt * (me.pitMode ? 20 : 5));
     camera.rotateZ(camS.roll);
   }
   if (Math.abs(camera.fov - fov) > 0.05) { camera.fov += (fov - camera.fov) * Math.min(1, dt * 6); camera.updateProjectionMatrix(); }
@@ -2337,8 +2395,7 @@ function drawGauge(dt) {
   bg.addColorStop(0, "#232a38"); bg.addColorStop(1, "#090b10");
   gx.beginPath(); gx.arc(0, 0, R, 0, TAU); gx.fillStyle = bg; gx.fill();
   const ring = gx.createLinearGradient(-R, -R, R, R);
-  ring.addColorStop(0, "#e3e7ee"); ring.addColorStop(0.5, "#6d7482"); ring.addColorStop(1, "#c9ced8");
-  gx.lineWidth = S * 0.022; gx.strokeStyle = ring; gx.stroke();
+  ring.addColorStop(0, "#e3e7ee"); ring.addColorStop(0.5, "#6d7482"); ring.addColorStop(1, "#c9ced8");  gx.lineWidth = S * 0.022; gx.strokeStyle = ring; gx.stroke();
 
   // Zone rouge (300 à 360 km/h)
   gx.beginPath(); gx.arc(0, 0, R * 0.9, start + sweep * 300 / MAXK, start + sweep, false);
