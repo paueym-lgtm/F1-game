@@ -1,11 +1,10 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<link rel="icon" type="image/png" href="favicon.png?v=7">
-<link rel="shortcut icon" type="image/png" href="favicon.png?v=7">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Grand Prix de Monaco 3D</title>
+<link rel="icon" type="image/png" href="logo1.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:ital,wght@1,600;1,800&display=swap" rel="stylesheet">
@@ -798,7 +797,8 @@ function separate(c, others) {
       c.x += -sa * s * pw * 0.6; c.z += ca * s * pw * 0.6;
       c.vx *= 0.996; c.vz *= 0.996;
     } else {
-      const s = lon > 0 ? -1 : 1;      c.x += ca * s * pl * 0.6; c.z += sa * s * pl * 0.6;
+      const s = lon > 0 ? -1 : 1;
+      c.x += ca * s * pl * 0.6; c.z += sa * s * pl * 0.6;
       if (lon > 0) { c.vx *= 0.985; c.vz *= 0.985; }
     }
   }
@@ -1597,7 +1597,8 @@ function curveRadius(i, k) {
   const a = (i - k + N) % N, c = (i + k) % N;
   const abx = TX[i] - TX[a], abz = TZ[i] - TZ[a], acx = TX[c] - TX[a], acz = TZ[c] - TZ[a];
   const cross = Math.abs(abx * acz - abz * acx);
-  const A = Math.hypot(abx, abz), B = Math.hypot(TX[c] - TX[i], TZ[c] - TZ[i]), C = Math.hypot(acx, acz);  return cross > 1e-6 ? A * B * C / (2 * cross) : 1e9;
+  const A = Math.hypot(abx, abz), B = Math.hypot(TX[c] - TX[i], TZ[c] - TZ[i]), C = Math.hypot(acx, acz);
+  return cross > 1e-6 ? A * B * C / (2 * cross) : 1e9;
 }
 // Ruban dont la largeur suit la courbure (pour ne pas se replier dans les virages serrés)
 function ribbonWide(side, y, material, tile, maxW) {
@@ -2396,7 +2397,8 @@ function drawGauge(dt) {
   bg.addColorStop(0, "#232a38"); bg.addColorStop(1, "#090b10");
   gx.beginPath(); gx.arc(0, 0, R, 0, TAU); gx.fillStyle = bg; gx.fill();
   const ring = gx.createLinearGradient(-R, -R, R, R);
-  ring.addColorStop(0, "#e3e7ee"); ring.addColorStop(0.5, "#6d7482"); ring.addColorStop(1, "#c9ced8");  gx.lineWidth = S * 0.022; gx.strokeStyle = ring; gx.stroke();
+  ring.addColorStop(0, "#e3e7ee"); ring.addColorStop(0.5, "#6d7482"); ring.addColorStop(1, "#c9ced8");
+  gx.lineWidth = S * 0.022; gx.strokeStyle = ring; gx.stroke();
 
   // Zone rouge (300 à 360 km/h)
   gx.beginPath(); gx.arc(0, 0, R * 0.9, start + sweep * 300 / MAXK, start + sweep, false);
